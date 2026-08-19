@@ -1,0 +1,59 @@
+{
+  "name": "@tephradb/client",
+  "version": "0.1.0",
+  "description": "A TypeScript client for a tephra event store, speaking its length-prefixed protobuf-over-TCP protocol.",
+  "keywords": [
+    "tephra",
+    "event-store",
+    "event-sourcing",
+    "dcb",
+    "dynamic-consistency-boundary",
+    "protobuf",
+    "tcp"
+  ],
+  "license": "Apache-2.0",
+  "author": "tephra",
+  "homepage": "https://github.com/tephradb/tephra-js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tephradb/tephra-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tephradb/tephra-js/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run --exclude '**/integration.test.ts'",
+    "test:watch": "vitest",
+    "test:integration": "vitest run test/integration.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.14.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

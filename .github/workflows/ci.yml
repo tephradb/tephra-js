@@ -1,0 +1,51 @@
+name: ci
+
+# Checks on every push to main and every pull request: formatting and lint (biome), types (tsc),
+# the dual ESM + CJS build (tsup), and the unit tests across the supported Node versions. The
+# integration tests are gated on a tephra-server binary, so they skip themselves here. Green here
+# means the tree is correct, builds, and passes.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes an in-progress run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint, types, and the published bundle. The primary "it is clean and builds" gate.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  # Unit tests on every supported Node version (the package declares engines >=18).
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
