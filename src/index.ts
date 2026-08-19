@@ -3,6 +3,8 @@
 
 export { Client } from "./client.js";
 
+export { PROTOCOL_VERSION } from "./proto/messages.js";
+
 export {
   AppendCondition,
   type AppendResult,

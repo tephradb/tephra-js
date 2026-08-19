@@ -6,6 +6,8 @@ import {
   ConnError,
   ErrorCode,
   Event,
+  PROTOCOL_VERSION,
+  ProtocolError,
   Query,
   ServerError,
   isCaughtUp,
@@ -25,13 +27,26 @@ interface ServerConn {
 
 type Handler = (request: WireRequest, conn: ServerConn) => void;
 
+/** Answers the mandatory opening Hello. Defaults to acknowledging with the negotiated version. */
+type HelloHandler = (request: WireRequest, conn: ServerConn) => void;
+
+const defaultHello: HelloHandler = (request, conn) => {
+  conn.send({
+    requestId: request.requestId,
+    kind: {
+      kind: "helloAck",
+      helloAck: { protocolVersion: PROTOCOL_VERSION, serverVersion: "test" },
+    },
+  });
+};
+
 /** A minimal in-memory server speaking the tephra wire protocol, for driving the client in tests. */
 class MockServer {
   private readonly sockets: Socket[] = [];
 
   private constructor(private readonly server: Server) {}
 
-  static start(handler: Handler): Promise<MockServer> {
+  static start(handler: Handler, onHello: HelloHandler = defaultHello): Promise<MockServer> {
     const server = createServer();
     const mock = new MockServer(server);
     server.on("connection", (socket) => {
@@ -56,7 +71,14 @@ class MockServer {
           return;
         }
         for (const body of bodies) {
-          handler(decodeRequest(body), conn);
+          const request = decodeRequest(body);
+          // The first frame on every socket is a Hello; answer it out of band so per-test handlers
+          // only see real requests (matching the mandatory handshake the client now performs).
+          if (request.kind.kind === "hello") {
+            onHello(request, conn);
+          } else {
+            handler(request, conn);
+          }
         }
       });
     });
@@ -84,9 +106,19 @@ class MockServer {
 const servers: MockServer[] = [];
 const clients: Client[] = [];
 
-async function connect(handler: Handler, options?: Parameters<typeof Client.connect>[1]) {
-  const server = await MockServer.start(handler);
+/** Starts a mock server registered for teardown, without connecting a client. */
+async function startServer(handler: Handler, onHello?: HelloHandler): Promise<MockServer> {
+  const server = await MockServer.start(handler, onHello);
   servers.push(server);
+  return server;
+}
+
+async function connect(
+  handler: Handler,
+  options?: Parameters<typeof Client.connect>[1],
+  onHello?: HelloHandler,
+) {
+  const server = await startServer(handler, onHello);
   const client = await Client.connect(`127.0.0.1:${server.port}`, options);
   clients.push(client);
   return { server, client };
@@ -288,5 +320,100 @@ describe("Client", () => {
     const result = await client.append([Event.create("Enrolled", ["course:c1"])]);
     expect(result).toEqual({ first: 7n, last: 7n });
     await stream.close();
+  });
+});
+
+describe("authentication", () => {
+  test("opens with a Hello carrying the protocol version and no token by default", async () => {
+    const hello = new Deferred<WireRequest>();
+    await connect(
+      (_request, _conn) => {},
+      { bulkConnections: 0 },
+      (request, conn) => {
+        hello.resolve(request);
+        defaultHello(request, conn);
+      },
+    );
+    const request = await hello.promise;
+    expect(request.kind.kind).toBe("hello");
+    if (request.kind.kind === "hello") {
+      expect(request.kind.hello.protocolVersion).toBe(PROTOCOL_VERSION);
+      expect(request.kind.hello.authToken).toBeUndefined();
+    }
+  });
+
+  test("presents the configured bearer token in the Hello", async () => {
+    const hello = new Deferred<WireRequest>();
+    await connect(
+      (_request, _conn) => {},
+      { authToken: "s3cret", bulkConnections: 0 },
+      (request, conn) => {
+        hello.resolve(request);
+        defaultHello(request, conn);
+      },
+    );
+    const request = await hello.promise;
+    if (request.kind.kind === "hello") {
+      expect(request.kind.hello.authToken).toBe("s3cret");
+    }
+  });
+
+  test("authenticates every socket in the pool", async () => {
+    let hellos = 0;
+    await connect(
+      (_request, _conn) => {},
+      { bulkConnections: 3 },
+      (request, conn) => {
+        hellos += 1;
+        defaultHello(request, conn);
+      },
+    );
+    // Client.connect resolves only once every socket has been acknowledged: 1 control + 3 bulk.
+    expect(hellos).toBe(4);
+  });
+
+  test("a rejected token fails the connect with an Unauthenticated ServerError", async () => {
+    const server = await startServer(
+      (_request, _conn) => {},
+      (request, conn) => {
+        conn.send({
+          requestId: request.requestId,
+          kind: {
+            kind: "error",
+            error: { code: 8, message: "invalid or missing auth token", retryable: false },
+          },
+        });
+      },
+    );
+    let caught: unknown;
+    try {
+      await Client.connect(`127.0.0.1:${server.port}`, { authToken: "wrong", bulkConnections: 0 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ServerError);
+    expect((caught as ServerError).code).toBe(ErrorCode.Unauthenticated);
+  });
+
+  test("a HelloAck with a mismatched protocol version fails with a ProtocolError", async () => {
+    const server = await startServer(
+      (_request, _conn) => {},
+      (request, conn) => {
+        conn.send({
+          requestId: request.requestId,
+          kind: {
+            kind: "helloAck",
+            helloAck: { protocolVersion: PROTOCOL_VERSION + 1, serverVersion: "test" },
+          },
+        });
+      },
+    );
+    let caught: unknown;
+    try {
+      await Client.connect(`127.0.0.1:${server.port}`, { bulkConnections: 0 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProtocolError);
   });
 });

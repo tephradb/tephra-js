@@ -7,6 +7,13 @@
 
 import { Reader, Writer } from "./wire.js";
 
+/**
+ * The protocol version the client announces in its opening Hello and the server answers in its
+ * HelloAck. The single compatibility gate: a server rejects a version it does not support rather
+ * than inferring compatibility from field presence. Bumped on any breaking wire-protocol change.
+ */
+export const PROTOCOL_VERSION = 1;
+
 // ---------------------------------------------------------------------------
 // Wire structs
 // ---------------------------------------------------------------------------
@@ -53,12 +60,20 @@ export interface WireCancelRequest {
   target: bigint;
 }
 
+export interface WireHello {
+  protocolVersion: number;
+  // The bearer token, present when authenticating. Absent leaves the connection unauthenticated,
+  // which the server accepts only when it has no tokens configured.
+  authToken?: string;
+}
+
 export type RequestKind =
   | { kind: "append"; append: WireAppendRequest }
   | { kind: "read"; read: WireReadRequest }
   | { kind: "subscribe"; subscribe: WireSubscribeRequest }
   | { kind: "cancel"; cancel: WireCancelRequest }
   | { kind: "stats" }
+  | { kind: "hello"; hello: WireHello }
   | { kind: "none" };
 
 export interface WireRequest {
@@ -108,6 +123,11 @@ export interface WireErrorResponse {
   retryable: boolean;
 }
 
+export interface WireHelloAck {
+  protocolVersion: number;
+  serverVersion: string;
+}
+
 export type ResponseKind =
   | { kind: "append"; append: WireAppendResponse }
   | { kind: "readEvents"; readEvents: WireReadEvents }
@@ -115,6 +135,7 @@ export type ResponseKind =
   | { kind: "error"; error: WireErrorResponse }
   | { kind: "caughtUp"; caughtUp: WireSubscribeCaughtUp }
   | { kind: "stats"; stats: WireStatsResponse }
+  | { kind: "helloAck"; helloAck: WireHelloAck }
   | { kind: "none" };
 
 export interface WireResponse {
@@ -356,6 +377,33 @@ function decodeCancelRequest(r: Reader): WireCancelRequest {
   return req;
 }
 
+function encodeHello(hello: WireHello): Uint8Array {
+  const w = new Writer();
+  w.uint32(1, hello.protocolVersion);
+  if (hello.authToken !== undefined) {
+    w.string(2, hello.authToken);
+  }
+  return w.finish();
+}
+
+function decodeHello(r: Reader): WireHello {
+  const hello: WireHello = { protocolVersion: 0 };
+  while (!r.done) {
+    const { fieldNo, wireType } = r.tag();
+    switch (fieldNo) {
+      case 1:
+        hello.protocolVersion = r.varint();
+        break;
+      case 2:
+        hello.authToken = r.string();
+        break;
+      default:
+        r.skip(wireType);
+    }
+  }
+  return hello;
+}
+
 export function encodeRequest(request: WireRequest): Uint8Array {
   const w = new Writer();
   w.uint64(1, request.requestId);
@@ -375,6 +423,9 @@ export function encodeRequest(request: WireRequest): Uint8Array {
     case "stats":
       // StatsRequest is empty; the tag alone sets the oneof.
       w.message(6, new Uint8Array(0));
+      break;
+    case "hello":
+      w.message(7, encodeHello(request.kind.hello));
       break;
     case "none":
       break;
@@ -406,6 +457,9 @@ export function decodeRequest(bytes: Uint8Array): WireRequest {
       case 6:
         r.message();
         request.kind = { kind: "stats" };
+        break;
+      case 7:
+        request.kind = { kind: "hello", hello: decodeHello(r.message()) };
         break;
       default:
         r.skip(wireType);
@@ -615,6 +669,31 @@ function decodeErrorResponse(r: Reader): WireErrorResponse {
   return res;
 }
 
+function encodeHelloAck(ack: WireHelloAck): Uint8Array {
+  const w = new Writer();
+  w.uint32(1, ack.protocolVersion);
+  w.string(2, ack.serverVersion);
+  return w.finish();
+}
+
+function decodeHelloAck(r: Reader): WireHelloAck {
+  const ack: WireHelloAck = { protocolVersion: 0, serverVersion: "" };
+  while (!r.done) {
+    const { fieldNo, wireType } = r.tag();
+    switch (fieldNo) {
+      case 1:
+        ack.protocolVersion = r.varint();
+        break;
+      case 2:
+        ack.serverVersion = r.string();
+        break;
+      default:
+        r.skip(wireType);
+    }
+  }
+  return ack;
+}
+
 export function encodeResponse(response: WireResponse): Uint8Array {
   const w = new Writer();
   w.uint64(1, response.requestId);
@@ -636,6 +715,9 @@ export function encodeResponse(response: WireResponse): Uint8Array {
       break;
     case "stats":
       w.message(7, encodeStatsResponse(response.kind.stats));
+      break;
+    case "helloAck":
+      w.message(8, encodeHelloAck(response.kind.helloAck));
       break;
     case "none":
       break;
@@ -669,6 +751,9 @@ export function decodeResponse(bytes: Uint8Array): WireResponse {
         break;
       case 7:
         response.kind = { kind: "stats", stats: decodeStatsResponse(r.message()) };
+        break;
+      case 8:
+        response.kind = { kind: "helloAck", helloAck: decodeHelloAck(r.message()) };
         break;
       default:
         r.skip(wireType);

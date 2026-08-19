@@ -8,6 +8,7 @@ import { ConnError, ProtocolError } from "./errors.js";
 import { FrameDecoder, writeFrame } from "./framing.js";
 import type { ResolvedConfig } from "./options.js";
 import {
+  PROTOCOL_VERSION,
   type RequestKind,
   type WireAppendCondition,
   type WireAppendResponse,
@@ -31,6 +32,7 @@ type Pending =
       deferred: Deferred<WireAppendResponse | WireStatsResponse>;
       permit: boolean;
     }
+  | { type: "hello"; deferred: Deferred<void>; permit: boolean }
   | { type: "read"; stream: ReadStream; permit: boolean }
   | { type: "subscribe"; stream: SubscribeStream; permit: boolean };
 
@@ -69,7 +71,16 @@ export class Conn {
     signal?: AbortSignal,
   ): Promise<Conn> {
     const socket = await dialSocket(host, port, config, signal);
-    return new Conn(socket, config);
+    const conn = new Conn(socket, config);
+    // The mandatory opening Hello: negotiate the protocol version and authenticate before the
+    // connection carries any request. A version mismatch or a rejected token fails the connect.
+    try {
+      await conn.hello(config.authToken);
+    } catch (err) {
+      await conn.close();
+      throw err;
+    }
+    return conn;
   }
 
   // -------------------------------------------------------------------------
@@ -209,8 +220,54 @@ export class Conn {
         this.inflight.release();
       }
       const entry = this.finalize(id);
-      if (entry && entry.type !== "unary") {
+      if (entry && (entry.type === "read" || entry.type === "subscribe")) {
         entry.stream.failWith(asError(err, "failed to send request"));
+      }
+    }
+  }
+
+  /**
+   * Sends the mandatory opening Hello and awaits the server's HelloAck, so a version mismatch or a
+   * rejected token fails the connect before any real request. Runs once, at connect, before the
+   * connection is handed to the Client, so the Hello is the first frame on the wire.
+   */
+  private hello(token: string | undefined): Promise<void> {
+    const id = this.nextId();
+    const deferred = new Deferred<void>();
+    this.pending.set(id, { type: "hello", deferred, permit: false });
+    void this.sendHelloRequest(id, token);
+    return deferred.promise;
+  }
+
+  private async sendHelloRequest(id: bigint, token: string | undefined): Promise<void> {
+    let heldPermit = false;
+    try {
+      await this.inflight.acquire();
+      heldPermit = true;
+      const entry = this.pending.get(id);
+      if (!entry) {
+        this.inflight.release();
+        return;
+      }
+      if (this.dead) {
+        throw this.deadError();
+      }
+      entry.permit = true;
+      heldPermit = false;
+      const hello = { protocolVersion: PROTOCOL_VERSION, authToken: token };
+      await this.enqueue(
+        writeFrame(
+          encodeRequest({ requestId: id, kind: { kind: "hello", hello } }),
+          this.config.maxFrameLen,
+        ),
+      );
+    } catch (err) {
+      if (heldPermit) {
+        this.inflight.release();
+      }
+      const entry = this.finalize(id);
+      if (entry?.type === "hello") {
+        entry.deferred.reject(asError(err, "failed to send hello"));
       }
     }
   }
@@ -333,6 +390,29 @@ export class Conn {
     const entry = this.pending.get(id);
     if (!entry) {
       // A late frame for a request that was already cancelled or completed. Ignore it.
+      return;
+    }
+
+    if (entry.type === "hello") {
+      this.finalize(id);
+      if (kind.kind === "helloAck") {
+        const server = kind.helloAck.protocolVersion;
+        if (server !== PROTOCOL_VERSION) {
+          // The server only sends a HelloAck on its success path, where the version matches, so this
+          // is defensive against a non-conforming server rather than real negotiation.
+          entry.deferred.reject(
+            new ProtocolError(
+              `server protocol version ${server} does not match client ${PROTOCOL_VERSION}`,
+            ),
+          );
+        } else {
+          entry.deferred.resolve();
+        }
+      } else if (kind.kind === "error") {
+        entry.deferred.reject(serverErrorFromWire(kind.error));
+      } else {
+        entry.deferred.reject(new ProtocolError(`unexpected ${kind.kind} response to hello`));
+      }
       return;
     }
 
@@ -487,7 +567,7 @@ export class Conn {
     const pending = [...this.pending.values()];
     this.pending.clear();
     for (const entry of pending) {
-      if (entry.type === "unary") {
+      if (entry.type === "unary" || entry.type === "hello") {
         entry.deferred.reject(err);
       } else {
         entry.stream.failWith(err);

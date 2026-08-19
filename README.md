@@ -9,7 +9,8 @@ the design of the reference Rust `tephra-client` and the Go client: a single, co
 npm install @tephradb/client
 ```
 
-Requires Node.js 18 or newer. It has zero runtime dependencies (the protobuf codec is hand written).
+Requires Node.js 18 or newer, and tephra 0.4 or newer (which introduced the mandatory `Hello`
+handshake this client speaks). It has zero runtime dependencies (the protobuf codec is hand written).
 
 ## Quick start
 
@@ -138,6 +139,7 @@ try {
 | `maxFrameLen` | 16 MiB | Largest frame accepted or produced. |
 | `connectTimeout` | none | Bounds the dial, in milliseconds. |
 | `tls` | off | `true` for the system roots, or an object for a private CA, mutual TLS, or a custom `minVersion`. |
+| `authToken` | none | A bearer token presented in each socket's opening handshake (see [Authentication](#authentication)). |
 | `signal` | none | An `AbortSignal` that aborts the connect. |
 
 A `Client` is safe to use concurrently. Internally each socket runs a reader loop (which
@@ -183,6 +185,42 @@ const client = await Client.connect("tephra.internal:9000", {
 `servername` defaults to the host in the dial address, so verifying a hostname certificate needs no
 extra configuration. The TLS session is established before the first frame; the wire protocol is
 unchanged, so everything else behaves identically to a plaintext connection.
+
+## Authentication
+
+Every connection opens with a mandatory `Hello`/`HelloAck` handshake that negotiates the protocol
+version, a single compatibility gate: a client and server must be on matching protocol versions. The
+client runs it on each socket (control and bulk) before any request rides it; you never see the
+handshake, but a version mismatch fails the connect with a `ProtocolError`.
+
+When the server requires authentication, pass a bearer token with `authToken`. It is carried in each
+socket's `Hello`:
+
+```ts
+const client = await Client.connect("tephra.example.com:9000", {
+  tls: true,
+  authToken: process.env.TEPHRA_TOKEN,
+});
+```
+
+The server gates tokens behind TLS, so pair `authToken` with `tls` (a plaintext token is only
+accepted by a server explicitly configured to allow it, e.g. behind a TLS-terminating proxy). A
+missing or rejected token fails the connect with a `ServerError` whose `code` is
+`ErrorCode.Unauthenticated`, up front rather than on the first request:
+
+```ts
+import { ErrorCode, ServerError } from "@tephradb/client";
+
+try {
+  await Client.connect("tephra.example.com:9000", { tls: true, authToken: "wrong" });
+} catch (err) {
+  if (err instanceof ServerError && err.code === ErrorCode.Unauthenticated) {
+    // bad or missing token
+  }
+}
+```
+
+Leaving `authToken` unset connects unauthenticated, which a server with no tokens configured accepts.
 
 ## Development
 

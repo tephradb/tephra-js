@@ -25,6 +25,8 @@ export const ErrorCode = {
   Internal: "internal",
   /** The server is shutting down. */
   Shutdown: "shutdown",
+  /** The connection failed authentication: a missing or invalid token, or a non-Hello first frame. */
+  Unauthenticated: "unauthenticated",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -39,6 +41,7 @@ const WIRE_ERROR_CODES: Record<number, ErrorCode> = {
   5: ErrorCode.BadRequest,
   6: ErrorCode.Internal,
   7: ErrorCode.Shutdown,
+  8: ErrorCode.Unauthenticated,
 };
 
 /** Maps a wire error code to the public ErrorCode. */

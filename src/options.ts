@@ -41,6 +41,13 @@ export interface ClientOptions {
    * object passes through to `tls.connect` for a private CA, mutual TLS, or a custom `minVersion`.
    */
   tls?: boolean | TlsOptions;
+  /**
+   * A bearer token presented in each socket's opening Hello, for a server that requires
+   * authentication. Every socket (control and bulk) authenticates with it independently. Unset
+   * connects unauthenticated, which the server accepts only when it has no tokens configured; a
+   * rejected token fails the connect with a `ServerError` (`code === ErrorCode.Unauthenticated`).
+   */
+  authToken?: string;
   /** Bounds the dial (in milliseconds). Applies to the connect only, not later operations. */
   connectTimeout?: number;
   /** Aborts the connect. */
@@ -60,6 +67,7 @@ export interface ResolvedConfig {
   requestQueueDepth: number;
   maxFrameLen: number;
   tls?: TlsOptions;
+  authToken?: string;
   connectTimeout?: number;
 }
 
@@ -87,6 +95,7 @@ export function resolveConfig(options: ClientOptions = {}): ResolvedConfig {
         : options.tls === true
           ? {}
           : options.tls,
+    authToken: options.authToken,
     connectTimeout: options.connectTimeout,
   };
 }

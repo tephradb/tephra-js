@@ -103,6 +103,15 @@ export class Writer {
     this.varint(value);
   }
 
+  /** Writes a uint32 field, omitting it when zero (proto3 default). */
+  uint32(fieldNo: number, value: number): void {
+    if (value === 0) {
+      return;
+    }
+    this.tag(fieldNo, WIRE_VARINT);
+    this.varint(value);
+  }
+
   /** Writes a string field, omitting it when empty (proto3 default). */
   string(fieldNo: number, value: string): void {
     if (value.length === 0) {

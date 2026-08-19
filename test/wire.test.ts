@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  PROTOCOL_VERSION,
   type WireRequest,
   type WireResponse,
   decodeRequest,
@@ -115,6 +116,26 @@ describe("request roundtrip", () => {
     const stats: WireRequest = { requestId: 9n, kind: { kind: "stats" } };
     expect(roundtripRequest(stats)).toEqual(stats);
   });
+
+  test("hello with a bearer token", () => {
+    const request: WireRequest = {
+      requestId: 1n,
+      kind: { kind: "hello", hello: { protocolVersion: PROTOCOL_VERSION, authToken: "s3cret" } },
+    };
+    expect(roundtripRequest(request)).toEqual(request);
+  });
+
+  test("hello without a token leaves it absent", () => {
+    const request: WireRequest = {
+      requestId: 1n,
+      kind: { kind: "hello", hello: { protocolVersion: PROTOCOL_VERSION } },
+    };
+    const decoded = roundtripRequest(request);
+    if (decoded.kind.kind === "hello") {
+      expect(decoded.kind.hello.protocolVersion).toBe(PROTOCOL_VERSION);
+      expect(decoded.kind.hello.authToken).toBeUndefined();
+    }
+  });
 });
 
 describe("response roundtrip", () => {
@@ -177,6 +198,17 @@ describe("response roundtrip", () => {
       expect(decoded.kind.error.conflictPosition).toBeUndefined();
       expect(decoded.kind.error.retryable).toBe(true);
     }
+  });
+
+  test("hello ack carries the protocol and server versions", () => {
+    const response: WireResponse = {
+      requestId: 1n,
+      kind: {
+        kind: "helloAck",
+        helloAck: { protocolVersion: PROTOCOL_VERSION, serverVersion: "0.1.0" },
+      },
+    };
+    expect(roundtripResponse(response)).toEqual(response);
   });
 
   test("stats response carries every field", () => {
