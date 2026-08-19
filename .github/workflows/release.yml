@@ -31,8 +31,9 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
 
-      # Trusted publishing needs npm >= 11.5.1, newer than the version bundled with Node 20.
-      - run: npm install -g npm@latest
+      # Trusted publishing needs npm >= 11.5.1, newer than the version bundled with Node 20. Pin to
+      # the 11.x line: the latest npm major requires Node 22+, which this Node 20 job cannot install.
+      - run: npm install -g "npm@^11.5.1"
 
       - name: Verify the tag matches package.json
         if: github.ref_type == 'tag'
