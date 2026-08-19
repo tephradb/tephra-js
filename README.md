@@ -98,6 +98,16 @@ Cancel a stream by calling `close`, or by passing an `AbortSignal` and aborting 
 best-effort cancel to the server so it stops producing frames. Breaking out of a `for await` loop
 closes the stream too.
 
+## Server stats
+
+`stats` returns a point-in-time snapshot with `bigint` counters: the event, segment, and
+on-disk-byte counts, uptime, and the live connection and subscription counts.
+
+```ts
+const stats = await client.stats();
+console.log(`${stats.eventCount} events across ${stats.segmentCount} segments`);
+```
+
 ## Errors
 
 The client throws typed errors, all extending `TephraError`. It performs no automatic retries or
