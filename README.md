@@ -42,9 +42,13 @@ try {
 - **Query**: `Query.all()` matches everything; `Query.items(...)` OR's items, where each item AND's
   its tags and OR's its types (an empty item set matches nothing, distinct from the catch-all).
   Build items with `QueryItem.ofTypes`, `QueryItem.withTags`, or `QueryItem.of`.
-- **AppendCondition**: a dynamic consistency boundary. Reject the append if any event after `after`
-  matches the query. `after` defaults to `ZERO`, which considers the whole log (the uniqueness-guard
-  pattern). Build one with `AppendCondition.create(query, after?)`.
+- **AppendCondition**: a dynamic consistency boundary. Two checks, OR'd. The boundary check rejects
+  the append if any event after `after` matches `failIfEventsMatch`; `after` defaults to `ZERO`,
+  which considers the whole log (the uniqueness-guard pattern). The optional existence check
+  `failIfExists` rejects if any event *anywhere* matches its query (an implicit `after = 0`): the
+  idempotency/dedupe guard, reported distinctly as `ErrorCode.AlreadyExists`. Build a boundary
+  condition with `AppendCondition.create(query, after?, failIfExists?)`, or the pure idempotency
+  guard with `AppendCondition.existsOnly(query)`.
 
 ## Reads and pagination
 
@@ -98,6 +102,33 @@ Cancel a stream by calling `close`, or by passing an `AbortSignal` and aborting 
 best-effort cancel to the server so it stops producing frames. Breaking out of a `for await` loop
 closes the stream too.
 
+## Idempotent appends
+
+A `failIfExists` clause makes an append safe to retry: it rejects if a matching event already exists
+*anywhere* in the log, independent of the boundary `after`. A single `after` cannot be both a moving
+decision boundary and a whole-log uniqueness assertion at once, so this is the second, separate
+check, for deduping commands by an idempotency key. Its conflict surfaces as `ErrorCode.AlreadyExists`
+(not a boundary `ErrorCode.Conflict`), so a duplicate can be treated as "already applied" (a no-op)
+rather than "rebuild the decision model and retry".
+
+```ts
+import { AppendCondition, ErrorCode, Event, Query, QueryItem, ServerError } from "@tephradb/client";
+
+const dedupe = AppendCondition.existsOnly(Query.items(QueryItem.withTags("cmd:order-42")));
+try {
+  await client.append([Event.create("OrderPlaced", ["cmd:order-42"])], dedupe);
+} catch (err) {
+  if (err instanceof ServerError && err.code === ErrorCode.AlreadyExists) {
+    // The command was already applied; treat this retry as a no-op.
+  } else {
+    throw err;
+  }
+}
+```
+
+To assert a decision boundary *and* a dedupe key in one append, pass both: `AppendCondition.create(
+boundaryQuery, after, dedupeQuery)`.
+
 ## Server stats
 
 `stats` returns a point-in-time snapshot with `bigint` counters: the event, segment, and
@@ -113,9 +144,10 @@ console.log(`${stats.eventCount} events across ${stats.segmentCount} segments`);
 The client throws typed errors, all extending `TephraError`. It performs no automatic retries or
 reconnection: on a durable failure it surfaces the error and leaves policy to you.
 
-- `ServerError`: the server returned an error. `code` is an `ErrorCode`; `retryable` marks an
-  advisory same-batch append conflict (safe to retry); `conflictPosition` is set for a durable
-  append conflict.
+- `ServerError`: the server returned an error. `code` is an `ErrorCode` (`Conflict` for a boundary
+  conflict, `AlreadyExists` for a `failIfExists` duplicate); `retryable` marks an advisory same-batch
+  append conflict (safe to retry); `conflictPosition` is set for a durable append conflict, carrying
+  the conflicting (or already-existing) event's position.
 - `ProtocolError`: the peer sent something outside the protocol.
 - `ConnError`: the connection failed with requests in flight; every in-flight request is failed with
   it (never left hanging). The underlying cause is available on `cause`.

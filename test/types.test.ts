@@ -74,4 +74,26 @@ describe("AppendCondition", () => {
     const condition = AppendCondition.create(Query.all(), 42n);
     expect(condition.after).toBe(42n);
   });
+
+  test("has no existence clause by default", () => {
+    const condition = AppendCondition.create(Query.all());
+    expect(condition.failIfExists).toBeUndefined();
+  });
+
+  test("attaches an existence clause to a boundary condition", () => {
+    const dedupe = Query.items(QueryItem.withTags("cmd:order-42"));
+    const condition = AppendCondition.create(Query.all(), 42n, dedupe);
+    expect(condition.after).toBe(42n);
+    expect(condition.failIfExists).toBe(dedupe);
+  });
+
+  test("existsOnly has a match-nothing boundary and the existence clause", () => {
+    const dedupe = Query.items(QueryItem.withTags("cmd:order-42"));
+    const condition = AppendCondition.existsOnly(dedupe);
+    // A match-nothing boundary (no items), so only the existence clause can fire.
+    expect(condition.failIfEventsMatch.matchAll).toBe(false);
+    expect(condition.failIfEventsMatch.items).toEqual([]);
+    expect(condition.after).toBe(ZERO);
+    expect(condition.failIfExists).toBe(dedupe);
+  });
 });

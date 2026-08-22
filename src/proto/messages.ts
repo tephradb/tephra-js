@@ -37,6 +37,9 @@ export interface WireQuery {
 export interface WireAppendCondition {
   failIfEventsMatch: WireQuery;
   after: bigint;
+  // The optional existence clause (proto `optional Query fail_if_exists`). Absent means no
+  // existence check; a present (possibly match-nothing) query enables it.
+  failIfExists?: WireQuery;
 }
 
 export interface WireAppendRequest {
@@ -238,6 +241,9 @@ function encodeCondition(condition: WireAppendCondition): Uint8Array {
   const w = new Writer();
   w.message(1, encodeQuery(condition.failIfEventsMatch));
   w.uint64(2, condition.after);
+  if (condition.failIfExists !== undefined) {
+    w.message(3, encodeQuery(condition.failIfExists));
+  }
   return w.finish();
 }
 
@@ -254,6 +260,11 @@ function decodeCondition(r: Reader): WireAppendCondition {
         break;
       case 2:
         condition.after = r.varintBig();
+        break;
+      case 3:
+        // An absent field stays `undefined` (no existence check); a present one decodes here,
+        // so an empty (match-nothing) clause is preserved distinct from absent.
+        condition.failIfExists = decodeQuery(r.message());
         break;
       default:
         r.skip(wireType);

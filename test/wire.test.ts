@@ -47,6 +47,48 @@ describe("request roundtrip", () => {
     expect(roundtripRequest(request)).toEqual(request);
   });
 
+  test("append condition round-trips its existence clause", () => {
+    const request: WireRequest = {
+      requestId: 5n,
+      kind: {
+        kind: "append",
+        append: {
+          events: [{ type: "OrderPlaced", tags: ["cmd:order-42"], payload: new Uint8Array(0) }],
+          condition: {
+            failIfEventsMatch: { all: false, items: [{ types: [], tags: ["course:c1"] }] },
+            after: 42n,
+            failIfExists: { all: false, items: [{ types: [], tags: ["cmd:order-42"] }] },
+          },
+        },
+      },
+    };
+    const decoded = roundtripRequest(request);
+    expect(decoded).toEqual(request);
+    if (decoded.kind.kind === "append") {
+      expect(decoded.kind.append.condition?.failIfExists).toEqual({
+        all: false,
+        items: [{ types: [], tags: ["cmd:order-42"] }],
+      });
+    }
+  });
+
+  test("an absent existence clause decodes to undefined, not a match-nothing query", () => {
+    const request: WireRequest = {
+      requestId: 6n,
+      kind: {
+        kind: "append",
+        append: {
+          events: [{ type: "X", tags: [], payload: new Uint8Array(0) }],
+          condition: { failIfEventsMatch: { all: true, items: [] }, after: 0n },
+        },
+      },
+    };
+    const decoded = roundtripRequest(request);
+    if (decoded.kind.kind === "append") {
+      expect(decoded.kind.append.condition?.failIfExists).toBeUndefined();
+    }
+  });
+
   test("append with no condition leaves it absent", () => {
     const request: WireRequest = {
       requestId: 2n,

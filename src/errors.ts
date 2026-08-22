@@ -11,8 +11,13 @@ import type { Position } from "./types.js";
 export const ErrorCode = {
   /** The unspecified code, or any code this build does not recognize. */
   Unknown: "unknown",
-  /** An append condition failed. See ServerError.conflictPosition. */
+  /** An append's boundary check failed: a conflicting event landed after `after`. Rebuild the
+   * decision model and retry. See ServerError.conflictPosition. */
   Conflict: "conflict",
+  /** An append's `failIfExists` existence clause matched: the guarded event already exists.
+   * Distinct from Conflict so a client can treat it as "already applied" (a no-op) rather than
+   * "rebuild and retry". See ServerError.conflictPosition. */
+  AlreadyExists: "already_exists",
   /** A read cursor was past the server's durable tip. */
   AfterBeyondTip: "after_beyond_tip",
   /** An append carried zero events. */
@@ -42,6 +47,7 @@ const WIRE_ERROR_CODES: Record<number, ErrorCode> = {
   6: ErrorCode.Internal,
   7: ErrorCode.Shutdown,
   8: ErrorCode.Unauthenticated,
+  9: ErrorCode.AlreadyExists,
 };
 
 /** Maps a wire error code to the public ErrorCode. */
@@ -62,8 +68,9 @@ export class ValidationError extends TephraError {}
 
 /**
  * The server returned an error response. `retryable` marks an advisory same-batch append conflict
- * (safe to retry), distinct from a durable one (terminal). `conflictPosition` is set only for a
- * durable append conflict.
+ * (safe to retry), distinct from a durable one (terminal). `conflictPosition` is set for a durable
+ * append conflict, whether a boundary `Conflict` or an `AlreadyExists`: the position of the
+ * conflicting (already-existing) event.
  */
 export class ServerError extends TephraError {
   readonly code: ErrorCode;

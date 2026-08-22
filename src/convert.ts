@@ -35,7 +35,12 @@ export function queryToWire(query: Query): WireQuery {
 }
 
 export function conditionToWire(condition: AppendCondition): WireAppendCondition {
-  return { failIfEventsMatch: queryToWire(condition.failIfEventsMatch), after: condition.after };
+  return {
+    failIfEventsMatch: queryToWire(condition.failIfEventsMatch),
+    after: condition.after,
+    failIfExists:
+      condition.failIfExists !== undefined ? queryToWire(condition.failIfExists) : undefined,
+  };
 }
 
 export function appendResultFromWire(res: WireAppendResponse): AppendResult {

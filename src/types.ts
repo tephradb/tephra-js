@@ -232,21 +232,51 @@ export class Query {
 }
 
 /**
- * Guards an append: the append is rejected if any event after `after` matches `failIfEventsMatch`.
+ * Guards an append: two independent checks, OR'd, so the append is rejected if either fires.
+ *
+ * The boundary check rejects the append if any event after `after` matches `failIfEventsMatch`.
  * `after` is an exclusive lower bound; `ZERO` (the default) considers the whole log, i.e. fail if
- * any event matches. Build one with `AppendCondition.create`, optionally passing an `after` bound.
+ * any event matches (the uniqueness-guard pattern).
+ *
+ * The optional existence check `failIfExists` rejects the append if any event *anywhere* matches
+ * its query, independent of `after` (an implicit `after = 0`). It is the idempotency/dedupe guard:
+ * assert a key is globally absent even when the boundary legitimately advanced past events the
+ * decision read, which a single `after` cannot express. Its conflict is reported distinctly as
+ * `ErrorCode.AlreadyExists` (not a boundary `ErrorCode.Conflict`), so a client can treat "already
+ * applied" differently from "boundary moved, rebuild and retry".
+ *
+ * Build a boundary condition with `AppendCondition.create` (optionally attaching a `failIfExists`
+ * clause), or the pure idempotency guard with `AppendCondition.existsOnly`.
  */
 export class AppendCondition {
   readonly failIfEventsMatch: Query;
   readonly after: Position;
+  readonly failIfExists?: Query;
 
-  private constructor(failIfEventsMatch: Query, after: Position) {
+  private constructor(failIfEventsMatch: Query, after: Position, failIfExists?: Query) {
     this.failIfEventsMatch = failIfEventsMatch;
     this.after = after;
+    this.failIfExists = failIfExists;
   }
 
-  /** A condition over the given query, checking events strictly after `after` (default `ZERO`). */
-  static create(failIfEventsMatch: Query, after: Position = ZERO): AppendCondition {
-    return new AppendCondition(failIfEventsMatch, after);
+  /**
+   * A condition over the given query, checking events strictly after `after` (default `ZERO`).
+   * Pass `failIfExists` to also attach a whole-log existence (idempotency) clause.
+   */
+  static create(
+    failIfEventsMatch: Query,
+    after: Position = ZERO,
+    failIfExists?: Query,
+  ): AppendCondition {
+    return new AppendCondition(failIfEventsMatch, after, failIfExists);
+  }
+
+  /**
+   * A condition with no boundary check, only the existence clause: fail the append if any event
+   * anywhere matches `failIfExists`. The pure idempotency/dedupe guard. The boundary is a
+   * match-nothing query (`Query.items()`), so only the existence clause can fire.
+   */
+  static existsOnly(failIfExists: Query): AppendCondition {
+    return new AppendCondition(Query.items(), ZERO, failIfExists);
   }
 }

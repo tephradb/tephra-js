@@ -138,6 +138,22 @@ describe.runIf(process.env.TEPHRA_SERVER_BIN || existsSync(join(process.cwd(), "
         } catch (err) {
           expect((err as ServerError).code).toBe(ErrorCode.Conflict);
         }
+
+        // An idempotency guard: commit a command carrying its dedupe key, then a re-application
+        // guarded by `existsOnly` on that key is rejected with AlreadyExists (distinct from a
+        // boundary Conflict), terminal, at the original position.
+        const placed = await client.append([Event.create("OrderPlaced", ["cmd:abc"])]);
+        const idem = AppendCondition.existsOnly(Query.items(QueryItem.withTags("cmd:abc")));
+        try {
+          await client.append([Event.create("OrderPlaced", ["cmd:abc"])], idem);
+          throw new Error("expected the duplicate order to be rejected");
+        } catch (err) {
+          expect(err).toBeInstanceOf(ServerError);
+          const serverError = err as ServerError;
+          expect(serverError.code).toBe(ErrorCode.AlreadyExists);
+          expect(serverError.retryable).toBe(false);
+          expect(serverError.conflictPosition).toBe(placed.first);
+        }
       } finally {
         await client.close();
       }

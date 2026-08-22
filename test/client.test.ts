@@ -2,6 +2,7 @@ import { type Server, type Socket, createServer } from "node:net";
 import { afterEach, describe, expect, test } from "vitest";
 import { DEFAULT_MAX_FRAME_LEN, FrameDecoder, writeFrame } from "../src/framing.js";
 import {
+  AppendCondition,
   Client,
   ConnError,
   ErrorCode,
@@ -9,6 +10,7 @@ import {
   PROTOCOL_VERSION,
   ProtocolError,
   Query,
+  QueryItem,
   ServerError,
   isCaughtUp,
 } from "../src/index.js";
@@ -239,6 +241,45 @@ describe("Client", () => {
       expect(serverError.retryable).toBe(false);
       expect(serverError.conflictPosition).toBe(5n);
     }
+  });
+
+  test("sends an existence clause and reports AlreadyExists distinctly", async () => {
+    let sawExistence = false;
+    const { client } = await connect((request, conn) => {
+      if (request.kind.kind === "append") {
+        // The condition carries the existence clause but no boundary items.
+        const condition = request.kind.append.condition;
+        sawExistence =
+          condition?.failIfExists?.items.some((item) => item.tags.includes("cmd:abc")) === true &&
+          condition.failIfEventsMatch.all === false &&
+          condition.failIfEventsMatch.items.length === 0;
+        conn.send({
+          requestId: request.requestId,
+          kind: {
+            kind: "error",
+            error: {
+              code: 9,
+              message: "already exists",
+              conflictPosition: 1n,
+              retryable: false,
+            },
+          },
+        });
+      }
+    });
+    const condition = AppendCondition.existsOnly(Query.items(QueryItem.withTags("cmd:abc")));
+    const event = Event.create("OrderPlaced", ["cmd:abc"]);
+    try {
+      await client.append([event], condition);
+      throw new Error("expected an AlreadyExists conflict");
+    } catch (err) {
+      const serverError = err as ServerError;
+      expect(serverError).toBeInstanceOf(ServerError);
+      expect(serverError.code).toBe(ErrorCode.AlreadyExists);
+      expect(serverError.retryable).toBe(false);
+      expect(serverError.conflictPosition).toBe(1n);
+    }
+    expect(sawExistence).toBe(true);
   });
 
   test("fails an in-flight request when the connection drops", async () => {
